@@ -9,7 +9,19 @@ use crate::sockets::{start_websocket_server, AppState};
 use shortcuts::Shortcut;
 use std::net::{Ipv4Addr, TcpListener};
 use std::sync::Arc;
+use tauri::State;
 use tokio::sync::broadcast;
+
+struct ServerConfig {
+    ip: String,
+    port: u16,
+}
+
+#[derive(serde::Serialize)]
+struct ServerConfigData {
+    ip: String,
+    port: u16,
+}
 
 #[tauri::command]
 fn get_local_ip() -> Result<String, String> {
@@ -31,6 +43,14 @@ fn find_free_port() -> Result<u16, String> {
     Ok(port)
 }
 
+#[tauri::command]
+fn get_server_config(server_config: State<Arc<ServerConfig>>) -> ServerConfigData {
+    ServerConfigData {
+        ip: server_config.ip.clone(),
+        port: server_config.port,
+    }
+}
+
 fn main() {
     // Generate the Tauri context
     let context = tauri::generate_context!();
@@ -41,7 +61,7 @@ fn main() {
     let shortcuts_file = app_dir.join("shortcuts.json");
 
     // Create a broadcast channel for shortcut updates
-    let (sender, _receiver) = broadcast::channel::<Shortcut>(16);
+    let (sender, _receiver) = broadcast::channel::<Vec<Shortcut>>(16);
 
     // Initialize the ShortcutStore with broadcaster
     let store = Arc::new(ShortcutStore::new(shortcuts_file, sender.clone()));
@@ -52,10 +72,15 @@ fn main() {
     // Get the local IP address and find a free port
     let ip = get_local_ip().unwrap_or_else(|_| "127.0.0.1".to_string());
     let port = find_free_port().unwrap_or(3000);
+    let server_config = Arc::new(ServerConfig {
+        ip: ip.clone(),
+        port,
+    });
 
     tauri::Builder::default()
         .manage(store.clone())
         .manage(app_state.clone())
+        .manage(server_config.clone())
         .invoke_handler(tauri::generate_handler![
             get_shortcuts_command,
             add_shortcut,
@@ -63,7 +88,7 @@ fn main() {
             delete_shortcut,
             simulate_shortcut,
             get_local_ip,
-            find_free_port,
+            get_server_config,
         ])
         .setup(move |app| {
             let handle = app.handle();

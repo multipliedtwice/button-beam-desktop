@@ -19,8 +19,8 @@
     },
     "windows": [
       {
-        "title": "button-beam-desktop",
-        "width": 800,
+        "title": "Button Beam Desktop",
+        "width": 480,
         "height": 600
       }
     ],

@@ -4,10 +4,10 @@ use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager, State}; // Import Manager trait
+use tauri::{AppHandle, Manager, State};
 use tokio::sync::broadcast::Sender;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Shortcut {
     pub id: u64,
     pub keys: String,
@@ -16,11 +16,11 @@ pub struct Shortcut {
 pub struct ShortcutStore {
     pub shortcuts: Mutex<Vec<Shortcut>>,
     pub file_path: PathBuf,
-    pub broadcaster: Sender<Shortcut>,
+    pub broadcaster: Sender<Vec<Shortcut>>, // Changed to broadcast Vec<Shortcut>
 }
 
 impl ShortcutStore {
-    pub fn new(file_path: PathBuf, broadcaster: Sender<Shortcut>) -> Self {
+    pub fn new(file_path: PathBuf, broadcaster: Sender<Vec<Shortcut>>) -> Self {
         // Create the directory if it doesn't exist
         if let Some(parent) = file_path.parent() {
             if !parent.exists() {
@@ -59,6 +59,15 @@ impl ShortcutStore {
     pub fn get_shortcuts(&self) -> Vec<Shortcut> {
         let shortcuts = self.shortcuts.lock().unwrap();
         shortcuts.clone()
+    }
+
+    // New method to broadcast the updated shortcuts list
+    pub fn broadcast_shortcuts(&self) {
+        let shortcuts = self.get_shortcuts();
+        // Send the updated list to all subscribers
+        if let Err(e) = self.broadcaster.send(shortcuts) {
+            eprintln!("Error broadcasting shortcuts: {}", e);
+        }
     }
 }
 
@@ -99,21 +108,16 @@ pub fn update_shortcut(
     {
         let mut shortcuts = store.shortcuts.lock().map_err(|e| e.to_string())?;
         if let Some(existing) = shortcuts.iter_mut().find(|s| s.id == shortcut.id) {
-            println!("Updating shortcut with ID: {}", shortcut.id); // Debugging log
             existing.keys = shortcut.keys.clone();
         } else {
-            println!("Shortcut with ID {} not found!", shortcut.id); // Debugging log
             return Err("Shortcut not found".into());
         }
     }
 
     store.save();
 
-    // Broadcast the updated shortcut
-    store
-        .broadcaster
-        .send(shortcut)
-        .map_err(|e| e.to_string())?;
+    // Broadcast the updated shortcuts list
+    store.broadcast_shortcuts();
 
     // Emit an event to notify frontend about the update
     app_handle
@@ -143,21 +147,19 @@ pub fn add_shortcut(
     {
         let mut shortcuts = store.shortcuts.lock().map_err(|e| e.to_string())?;
 
+        // Generate a unique ID based on the current time
         shortcut.id = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
 
-        shortcuts.insert(0, shortcut.clone());
+        shortcuts.push(shortcut.clone());
     }
 
     store.save();
 
-    // Broadcast the new shortcut
-    store
-        .broadcaster
-        .send(shortcut.clone())
-        .map_err(|e| e.to_string())?;
+    // Broadcast the updated shortcuts list
+    store.broadcast_shortcuts();
 
     // Emit an event to notify frontend about the addition
     app_handle
@@ -189,14 +191,15 @@ pub fn delete_shortcut(
 
         if let Some(pos) = shortcuts.iter().position(|s| s.id == id) {
             shortcuts.remove(pos);
-            println!("Shortcut with ID {} deleted successfully", id);
         } else {
-            println!("Shortcut with ID {} not found", id);
             return Err("Shortcut not found".into());
         }
     }
 
     store.save();
+
+    // Broadcast the updated shortcuts list
+    store.broadcast_shortcuts();
 
     // Emit an event to notify frontend about the deletion
     app_handle
@@ -224,18 +227,28 @@ pub fn simulate_shortcut(shortcut_keys: String) -> Result<(), String> {
     // Create Enigo instance
     let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
 
-    // Press down keys
-    for key in shortcut_keys.split('+') {
-        let result = match key.trim() {
-            "Ctrl" => enigo.key(Key::Control, Direction::Press),
-            "Alt" => enigo.key(Key::Alt, Direction::Press),
-            "Shift" => enigo.key(Key::Shift, Direction::Press),
-            "Cmd" | "Command" => enigo.key(Key::Meta, Direction::Press),
-            key_str => {
-                // Handle other keys, assuming they are single characters
-                let character = key_str.chars().next().unwrap();
-                enigo.key(Key::Unicode(character), Direction::Press)
-            }
+    // Keep track of pressed modifiers
+    let mut pressed_modifiers = vec![];
+
+    // Split the shortcut keys and trim whitespace
+    let keys: Vec<&str> = shortcut_keys.split('+').map(|k| k.trim()).collect();
+
+    // Press down modifier keys first
+    for key in &keys {
+        let result = match *key {
+            "Ctrl" | "Control" => enigo
+                .key(Key::Control, Direction::Press)
+                .map(|_| pressed_modifiers.push(Key::Control)),
+            "Alt" => enigo
+                .key(Key::Alt, Direction::Press)
+                .map(|_| pressed_modifiers.push(Key::Alt)),
+            "Shift" => enigo
+                .key(Key::Shift, Direction::Press)
+                .map(|_| pressed_modifiers.push(Key::Shift)),
+            "Cmd" | "Command" | "Meta" => enigo
+                .key(Key::Meta, Direction::Press)
+                .map(|_| pressed_modifiers.push(Key::Meta)),
+            _ => Ok(()),
         };
 
         if let Err(e) = result {
@@ -243,23 +256,61 @@ pub fn simulate_shortcut(shortcut_keys: String) -> Result<(), String> {
         }
     }
 
-    // Release keys in reverse order
-    for key in shortcut_keys.split('+').rev() {
-        let result = match key.trim() {
-            "Ctrl" => enigo.key(Key::Control, Direction::Release),
-            "Alt" => enigo.key(Key::Alt, Direction::Release),
-            "Shift" => enigo.key(Key::Shift, Direction::Release),
-            "Cmd" | "Command" => enigo.key(Key::Meta, Direction::Release),
-            key_str => {
-                let character = key_str.chars().next().unwrap();
-                enigo.key(Key::Unicode(character), Direction::Release)
-            }
-        };
+    // Press the main key(s)
+    for key in &keys {
+        if !["Ctrl", "Control", "Alt", "Shift", "Cmd", "Command", "Meta"].contains(&key) {
+            let key_str = key.trim();
+            let result = match key_str {
+                "Enter" => enigo.key(Key::Return, Direction::Click),
+                "Tab" => enigo.key(Key::Tab, Direction::Click),
+                "Backspace" => enigo.key(Key::Backspace, Direction::Click),
+                "Space" => enigo.key(Key::Space, Direction::Click),
+                // Add other special keys as needed
+                _ => {
+                    // Handle character keys
+                    let character = key_str.chars().next().unwrap();
+                    let mut need_shift = false;
+                    let mut char_to_use = character;
 
-        if let Err(e) = result {
-            eprintln!("Error releasing key {}: {}", key, e);
+                    // Check if character is uppercase or requires Shift
+                    if character.is_uppercase() || is_special_character(character) {
+                        need_shift = true;
+                        char_to_use = character.to_ascii_lowercase();
+                    }
+
+                    // Press Shift if needed and not already pressed
+                    if need_shift && !pressed_modifiers.contains(&Key::Shift) {
+                        enigo
+                            .key(Key::Shift, Direction::Press)
+                            .map(|_| pressed_modifiers.push(Key::Shift))
+                            .map_err(|e| format!("Error pressing Shift key: {}", e))?;
+                    }
+
+                    enigo.key(Key::Unicode(char_to_use), Direction::Click)
+                }
+            };
+
+            if let Err(e) = result {
+                eprintln!("Error pressing key {}: {}", key_str, e);
+            }
+        }
+    }
+
+    // Release modifier keys in reverse order
+    for key in pressed_modifiers.iter().rev() {
+        if let Err(e) = enigo.key(*key, Direction::Release) {
+            eprintln!("Error releasing key {:?}: {}", key, e);
         }
     }
 
     Ok(())
+}
+
+// Helper function to check if a character is a special character that requires Shift
+fn is_special_character(c: char) -> bool {
+    match c {
+        '!' | '@' | '#' | '$' | '%' | '^' | '&' | '*' | '(' | ')' | '_' | '+' | '{' | '}' | '|'
+        | ':' | '"' | '<' | '>' | '?' => true,
+        _ => false,
+    }
 }

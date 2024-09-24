@@ -7,7 +7,7 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 use warp::filters::ws::WebSocket;
 use warp::ws::Message;
-use warp::Filter; // Import Manager trait
+use warp::Filter;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Device {
@@ -17,18 +17,16 @@ pub struct Device {
 
 #[derive(Debug)]
 pub struct AppState {
-    pub devices: Mutex<HashMap<String, Device>>, // Asynchronous Mutex for thread-safe access
+    pub devices: Mutex<HashMap<String, Device>>,
 }
 
 impl AppState {
-    /// Creates a new AppState with an empty devices HashMap.
     pub fn new() -> Self {
         Self {
             devices: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Retrieves a list of all connected devices.
     pub async fn get_connected_devices(&self) -> Vec<Device> {
         let devices = self.devices.lock().await;
         devices.values().cloned().collect()
@@ -55,7 +53,7 @@ pub async fn start_websocket_server(
     let app_state_filter = warp::any().map(move || app_state.clone());
     let app_handle_filter = warp::any().map(move || app_handle.clone());
 
-    let ws_route = warp::path("ws")
+    let ws_route = warp::path::end() // Adjusted to match WebSocket URL
         .and(warp::ws())
         .and(store_filter)
         .and(app_state_filter)
@@ -66,12 +64,7 @@ pub async fn start_websocket_server(
              app_state: Arc<AppState>,
              app_handle: AppHandle| {
                 ws.on_upgrade(move |websocket| {
-                    handle_websocket_connection(
-                        websocket,
-                        store.clone(),
-                        app_state.clone(),
-                        app_handle.clone(),
-                    )
+                    handle_websocket_connection(websocket, store, app_state, app_handle)
                 })
             },
         );
@@ -101,7 +94,11 @@ pub async fn handle_websocket_connection(
     let (ws_sender, mut ws_receiver) = websocket.split();
 
     // Wrap ws_sender in Arc<Mutex<>> for shared access
-    let ws_sender = Arc::new(Mutex::new(ws_sender));
+    let send_ws_sender = Arc::new(Mutex::new(ws_sender));
+
+    // Clone the sender for both tasks
+    let send_ws_sender_for_send_task = Arc::clone(&send_ws_sender);
+    let send_ws_sender_for_recv_task = Arc::clone(&send_ws_sender);
 
     // Subscribe to the broadcaster for shortcut updates
     let mut receiver = store.broadcaster.subscribe();
@@ -109,14 +106,11 @@ pub async fn handle_websocket_connection(
     // Shared state for device name
     let device_name = Arc::new(Mutex::new(None));
 
-    // Clone Arcs for the send task
-    let send_ws_sender = Arc::clone(&ws_sender);
-
     // Task to send shortcut updates to the client
     let send_task = tokio::spawn(async move {
         while let Ok(shortcut) = receiver.recv().await {
             let shortcut_json = serde_json::to_string(&shortcut).unwrap();
-            let mut sender_guard = send_ws_sender.lock().await;
+            let mut sender_guard = send_ws_sender_for_send_task.lock().await;
             if sender_guard
                 .send(Message::text(shortcut_json))
                 .await
@@ -133,7 +127,6 @@ pub async fn handle_websocket_connection(
     let recv_app_state = Arc::clone(&app_state);
     let recv_app_handle = app_handle.clone();
     let recv_device_name = Arc::clone(&device_name);
-    let recv_ws_sender = Arc::clone(&ws_sender);
 
     // Task to receive messages from the client
     let recv_task = tokio::spawn(async move {
@@ -178,7 +171,10 @@ pub async fn handle_websocket_connection(
                                         let all_shortcuts = recv_store.get_shortcuts();
                                         let shortcuts_json =
                                             serde_json::to_string(&all_shortcuts).unwrap();
-                                        let mut sender_guard = recv_ws_sender.lock().await;
+
+                                        // Use the cloned sender
+                                        let mut sender_guard =
+                                            send_ws_sender_for_recv_task.lock().await;
                                         if sender_guard
                                             .send(Message::text(shortcuts_json))
                                             .await
@@ -222,7 +218,7 @@ pub async fn handle_websocket_connection(
         }
 
         // Handle device disconnection
-        if let Some(name) = device_name.lock().await.clone() {
+        if let Some(name) = recv_device_name.lock().await.clone() {
             let mut devices = recv_app_state.devices.lock().await;
             devices.remove(&name);
             println!("Device disconnected: {}", name);

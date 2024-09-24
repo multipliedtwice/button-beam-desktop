@@ -11,11 +11,9 @@ const ConnectWithQR: React.FC = () => {
 
   const fetchLocalIp = async () => {
     try {
-      // Fetch the local IP address and a free port
-      const ip = await invoke<string>("get_local_ip");
-      const port = await invoke<number>("find_free_port");
-      setQrData(`${ip}:${port}`);  // Combine IP and port
-      setIsQrOpen(true);           // Open the dialog
+      const config = await invoke<{ ip: string; port: number }>("get_server_config");
+      setQrData(`${config.ip}:${config.port}`);
+      setIsQrOpen(true);
     } catch (error) {
       console.error("Error fetching local IP or port:", error);
     }
@@ -24,7 +22,7 @@ const ConnectWithQR: React.FC = () => {
   return (
     <div>
       {/* Button to open QR dialog */}
-      <Button variant="ghost" onClick={fetchLocalIp}>
+      <Button variant="outline" onClick={fetchLocalIp}>
         <QrCode className="h-4 w-4 mr-1" />
         Connect with QR
       </Button>

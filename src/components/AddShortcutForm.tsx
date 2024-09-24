@@ -22,6 +22,23 @@ interface AddShortcutFormProps {
   openForm?: () => void; // Handler to open the form
 }
 
+export  const displayKey = (key: string) => {
+  switch (key) {
+    case " ":
+      return "Space";
+    case "ArrowUp":
+      return "Up";
+    case "ArrowDown":
+      return "Down";
+    case "ArrowLeft":
+      return "Left";
+    case "ArrowRight":
+      return "Right";
+    default:
+      return key.charAt(0).toUpperCase() + key.slice(1);
+  }
+};
+
 const AddShortcutForm: React.FC<AddShortcutFormProps> = ({
   onSave,
   existingShortcut,
@@ -88,18 +105,18 @@ const AddShortcutForm: React.FC<AddShortcutFormProps> = ({
       case " ":
         return "Space";
       case "ArrowUp":
-        return "Up";
+        return "ArrowUp";
       case "ArrowDown":
-        return "Down";
+        return "ArrowDown";
       case "ArrowLeft":
-        return "Left";
+        return "ArrowLeft";
       case "ArrowRight":
-        return "Right";
+        return "ArrowRight";
       default:
-        return key.charAt(0).toUpperCase() + key.slice(1);
+        return key;
     }
   };
-
+ 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (keys) {
@@ -130,7 +147,7 @@ const AddShortcutForm: React.FC<AddShortcutFormProps> = ({
           <form onSubmit={handleSubmit} className="space-y-4 py-4">
             <div className="p-4 bg-gray-100 h-[68px]">
               <div className="flex space-x-2 text-3xl text-center text-gray-400">
-                {keys}
+                {displayKey(keys)}
               </div>
             </div>
 
