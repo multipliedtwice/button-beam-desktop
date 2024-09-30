@@ -5,30 +5,43 @@ import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
 import QRCode from "react-qr-code";
 
-const ConnectWithQR: React.FC = () => {
+interface ConnectWithQRProps {
+  isOpen: boolean;
+  onOpenChange: (isOpen: boolean) => void;
+}
+
+const ConnectWithQR: React.FC<ConnectWithQRProps> = ({ isOpen, onOpenChange }) => {
   const [isQrOpen, setIsQrOpen] = useState(false);
   const [qrData, setQrData] = useState<string | null>(null);
 
-  const fetchLocalIp = async () => {
+  React.useEffect(() => {
+    if (isOpen) {
+      fetchQRData();
+    }
+  }, [isOpen]);
+
+  const fetchQRData = async () => {
     try {
       const config = await invoke<{ ip: string; port: number }>("get_server_config");
       setQrData(`${config.ip}:${config.port}`);
-      setIsQrOpen(true);
     } catch (error) {
-      console.error("Error fetching local IP or port:", error);
+      console.error("Failed to fetch QR data:", error);
     }
   };
 
   return (
     <div>
       {/* Button to open QR dialog */}
-      <Button variant="outline" onClick={fetchLocalIp}>
+      <Button variant="outline" onClick={() => {
+        setIsQrOpen(true)
+        fetchQRData()}
+        }>
         <QrCode className="h-4 w-4 mr-1" />
         Connect with QR
       </Button>
 
       {/* QR Code Dialog */}
-      <Dialog open={isQrOpen} onOpenChange={setIsQrOpen}>
+      <Dialog open={isQrOpen} onOpenChange={onOpenChange}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Connect with QR</DialogTitle>

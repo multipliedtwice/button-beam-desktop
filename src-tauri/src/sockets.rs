@@ -1,13 +1,14 @@
-use crate::shortcuts::{simulate_shortcut, ShortcutStore};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde_json::Value;
 use std::sync::Arc;
-use tauri::{AppHandle, Manager};
+use tauri::Manager;
 use tokio::sync::Mutex;
 use warp::filters::ws::WebSocket;
 use warp::ws::Message;
 use warp::Filter;
+
+use crate::shortcuts::{simulate_shortcut, ShortcutStore};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Device {
@@ -15,54 +16,35 @@ pub struct Device {
     pub connected: bool,
 }
 
-#[derive(Debug)]
 pub struct AppState {
-    pub devices: Mutex<HashMap<String, Device>>,
+    pub device: Mutex<Option<Device>>,
 }
 
 impl AppState {
     pub fn new() -> Self {
         Self {
-            devices: Mutex::new(HashMap::new()),
+            device: Mutex::new(None),
         }
-    }
-
-    pub async fn get_connected_devices(&self) -> Vec<Device> {
-        let devices = self.devices.lock().await;
-        devices.values().cloned().collect()
     }
 }
 
-/// Starts the WebSocket server.
-///
-/// # Arguments
-///
-/// * `ip` - The IP address to bind the server to.
-/// * `port` - The port number to bind the server to.
-/// * `store` - Shared state containing shortcuts.
-/// * `app_state` - Shared state containing connected devices.
-/// * `app_handle` - Handle to emit events to the frontend.
 pub async fn start_websocket_server(
-    ip: String,
+    ip: &str,
     port: u16,
     store: Arc<ShortcutStore>,
     app_state: Arc<AppState>,
-    app_handle: AppHandle,
+    app_handle: tauri::AppHandle,
 ) {
-    let store_filter = warp::any().map(move || store.clone());
-    let app_state_filter = warp::any().map(move || app_state.clone());
-    let app_handle_filter = warp::any().map(move || app_handle.clone());
-
-    let ws_route = warp::path::end() // Adjusted to match WebSocket URL
+    let ws_route = warp::path::end()
         .and(warp::ws())
-        .and(store_filter)
-        .and(app_state_filter)
-        .and(app_handle_filter)
+        .and(warp::any().map(move || store.clone()))
+        .and(warp::any().map(move || app_state.clone()))
+        .and(warp::any().map(move || app_handle.clone()))
         .map(
             |ws: warp::ws::Ws,
              store: Arc<ShortcutStore>,
              app_state: Arc<AppState>,
-             app_handle: AppHandle| {
+             app_handle: tauri::AppHandle| {
                 ws.on_upgrade(move |websocket| {
                     handle_websocket_connection(websocket, store, app_state, app_handle)
                 })
@@ -77,135 +59,58 @@ pub async fn start_websocket_server(
         .await;
 }
 
-/// Handles individual WebSocket connections.
-///
-/// # Arguments
-///
-/// * `websocket` - The WebSocket connection.
-/// * `store` - Shared state containing shortcuts.
-/// * `app_state` - Shared state containing connected devices.
-/// * `app_handle` - Handle to emit events to the frontend.
 pub async fn handle_websocket_connection(
     websocket: WebSocket,
     store: Arc<ShortcutStore>,
     app_state: Arc<AppState>,
-    app_handle: AppHandle,
+    app_handle: tauri::AppHandle,
 ) {
     let (ws_sender, mut ws_receiver) = websocket.split();
-
-    // Wrap ws_sender in Arc<Mutex<>> for shared access
     let send_ws_sender = Arc::new(Mutex::new(ws_sender));
 
-    // Clone the sender for both tasks
-    let send_ws_sender_for_send_task = Arc::clone(&send_ws_sender);
-    let send_ws_sender_for_recv_task = Arc::clone(&send_ws_sender);
-
-    // Subscribe to the broadcaster for shortcut updates
-    let mut receiver = store.broadcaster.subscribe();
-
-    // Shared state for device name
-    let device_name = Arc::new(Mutex::new(None));
-
-    // Task to send shortcut updates to the client
-    let send_task = tokio::spawn(async move {
-        while let Ok(shortcut) = receiver.recv().await {
-            let shortcut_json = serde_json::to_string(&shortcut).unwrap();
-            let mut sender_guard = send_ws_sender_for_send_task.lock().await;
-            if sender_guard
-                .send(Message::text(shortcut_json))
+    {
+        let device_lock = app_state.device.lock().await;
+        if device_lock.is_some() {
+            println!("A device is already connected. Rejecting new connection.");
+            let rejection_message = Message::text("connection_rejected");
+            send_ws_sender
+                .lock()
                 .await
-                .is_err()
-            {
-                // Client disconnected
-                break;
-            }
+                .send(rejection_message)
+                .await
+                .ok();
+            return;
+        } else {
+            println!("New connection attempt.");
         }
-    });
+    }
 
-    // Clone Arcs for the receive task
+    let app_handle_clone = app_handle.clone();
     let recv_store = Arc::clone(&store);
     let recv_app_state = Arc::clone(&app_state);
-    let recv_app_handle = app_handle.clone();
-    let recv_device_name = Arc::clone(&device_name);
+    let send_ws_sender_clone = Arc::clone(&send_ws_sender);
 
-    // Task to receive messages from the client
     let recv_task = tokio::spawn(async move {
         while let Some(result) = ws_receiver.next().await {
             match result {
                 Ok(message) => {
                     if let Ok(text) = message.to_str() {
-                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(text) {
+                        if let Ok(data) = serde_json::from_str::<Value>(text) {
                             match data.get("type").and_then(|t| t.as_str()) {
                                 Some("device_info") => {
-                                    if let Some(name) =
-                                        data.get("device_name").and_then(|n| n.as_str())
-                                    {
-                                        // Update device_name
-                                        {
-                                            let mut device_lock = recv_device_name.lock().await;
-                                            *device_lock = Some(name.to_string());
-                                        }
-
-                                        // Add device to AppState
-                                        {
-                                            let mut devices = recv_app_state.devices.lock().await;
-                                            devices.insert(
-                                                name.to_string(),
-                                                Device {
-                                                    name: name.to_string(),
-                                                    connected: true,
-                                                },
-                                            );
-                                        }
-
-                                        println!("Device connected: {}", name);
-
-                                        // Emit an event to notify frontend about the new device
-                                        let connected_devices =
-                                            recv_app_state.get_connected_devices().await;
-                                        recv_app_handle
-                                            .emit_all("devices_updated", connected_devices)
-                                            .unwrap();
-
-                                        // Send the current list of shortcuts to the newly connected device
-                                        let all_shortcuts = recv_store.get_shortcuts();
-                                        let shortcuts_json =
-                                            serde_json::to_string(&all_shortcuts).unwrap();
-
-                                        // Use the cloned sender
-                                        let mut sender_guard =
-                                            send_ws_sender_for_recv_task.lock().await;
-                                        if sender_guard
-                                            .send(Message::text(shortcuts_json))
-                                            .await
-                                            .is_err()
-                                        {
-                                            // Client disconnected
-                                            break;
-                                        }
-                                    }
+                                    handle_device_info(
+                                        data,
+                                        recv_app_state.clone(),
+                                        app_handle_clone.clone(),
+                                        send_ws_sender_clone.clone(),
+                                        recv_store.clone(),
+                                    )
+                                    .await;
                                 }
                                 Some("execute_shortcut") => {
-                                    if let Some(shortcut_id) =
-                                        data.get("shortcut_id").and_then(|id| id.as_u64())
-                                    {
-                                        if let Some(shortcut) = recv_store
-                                            .shortcuts
-                                            .lock()
-                                            .unwrap()
-                                            .iter()
-                                            .find(|s| s.id == shortcut_id)
-                                        {
-                                            if let Err(e) = simulate_shortcut(shortcut.keys.clone())
-                                            {
-                                                eprintln!("Error simulating shortcut: {}", e);
-                                            }
-                                        }
-                                    }
+                                    handle_execute_shortcut(data, recv_store.clone()).await;
                                 }
-                                _ => {
-                                    println!("Unknown message type or missing type field");
-                                }
+                                _ => println!("Unknown message type or missing type field."),
                             }
                         }
                     }
@@ -217,23 +122,75 @@ pub async fn handle_websocket_connection(
             }
         }
 
-        // Handle device disconnection
-        if let Some(name) = recv_device_name.lock().await.clone() {
-            let mut devices = recv_app_state.devices.lock().await;
-            devices.remove(&name);
-            println!("Device disconnected: {}", name);
+        if recv_app_state.device.lock().await.is_some() {
+            println!("Device disconnected.");
+            let mut device_lock = recv_app_state.device.lock().await;
+            *device_lock = None;
 
-            // Emit an event to notify frontend about the device disconnection
-            let connected_devices = recv_app_state.get_connected_devices().await;
-            recv_app_handle
-                .emit_all("devices_updated", connected_devices)
+            // Emit events on device disconnection
+            app_handle_clone
+                .emit_all("devices_updated", None::<&Device>)
                 .unwrap();
         }
     });
 
-    // Wait for either task to complete
     tokio::select! {
-        _ = send_task => {},
         _ = recv_task => {},
+    }
+}
+
+async fn handle_device_info(
+    data: Value,
+    app_state: Arc<AppState>,
+    app_handle: tauri::AppHandle,
+    send_ws_sender: Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
+    store: Arc<ShortcutStore>,
+) {
+    if let Some(name) = data.get("device_name").and_then(|n| n.as_str()) {
+        println!("Device connected: {}", name);
+        let mut device_lock = app_state.device.lock().await;
+
+        *device_lock = Some(Device {
+            name: name.to_string(),
+            connected: true,
+        });
+
+        // Emit events
+        app_handle
+            .emit_all("devices_updated", &*device_lock)
+            .unwrap();
+        app_handle
+            .emit_all("device_connected", &*device_lock)
+            .unwrap();
+
+        // Send shortcuts to client
+        let all_shortcuts = store.get_shortcuts();
+        let shortcuts_json = serde_json::to_string(&all_shortcuts).unwrap();
+        let mut sender_guard = send_ws_sender.lock().await;
+
+        sender_guard.send(Message::text(shortcuts_json)).await.ok();
+    }
+}
+
+async fn handle_execute_shortcut(data: Value, store: Arc<ShortcutStore>) {
+    if let Some(shortcut_id) = data.get("shortcut_id").and_then(|id| id.as_i64()) {
+        println!("Executing shortcut with ID: {}", shortcut_id);
+
+        let all_shortcuts = store.get_shortcuts();
+
+        // Find the shortcut by ID
+        if let Some(shortcut) = all_shortcuts.iter().find(|s| s.id == shortcut_id as u64) {
+            println!("Found shortcut: {:?}", shortcut);
+
+            // Here we assume there's a field `interval_ms` in the incoming data
+            let interval_ms = data.get("interval_ms").and_then(|i| i.as_u64());
+
+            // Use the simulate_shortcut function to simulate the key presses
+            if let Err(e) = simulate_shortcut(shortcut.sequence.clone(), interval_ms) {
+                eprintln!("Failed to simulate shortcut: {}", e);
+            }
+        } else {
+            eprintln!("Shortcut with ID {} not found.", shortcut_id);
+        }
     }
 }

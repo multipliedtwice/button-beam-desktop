@@ -10,13 +10,14 @@ use tokio::sync::broadcast::Sender;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Shortcut {
     pub id: u64,
-    pub keys: String,
+    pub name: String,
+    pub sequence: Vec<String>,
 }
 
 pub struct ShortcutStore {
     pub shortcuts: Mutex<Vec<Shortcut>>,
     pub file_path: PathBuf,
-    pub broadcaster: Sender<Vec<Shortcut>>, // Changed to broadcast Vec<Shortcut>
+    pub broadcaster: Sender<Vec<Shortcut>>,
 }
 
 impl ShortcutStore {
@@ -108,7 +109,7 @@ pub fn update_shortcut(
     {
         let mut shortcuts = store.shortcuts.lock().map_err(|e| e.to_string())?;
         if let Some(existing) = shortcuts.iter_mut().find(|s| s.id == shortcut.id) {
-            existing.keys = shortcut.keys.clone();
+            existing.sequence = shortcut.sequence.clone();
         } else {
             return Err("Shortcut not found".into());
         }
@@ -219,88 +220,97 @@ pub fn delete_shortcut(
 ///
 /// * `Result<(), String>` - Ok if successful, Err with an error message otherwise.
 #[tauri::command]
-pub fn simulate_shortcut(shortcut_keys: String) -> Result<(), String> {
-    println!("Simulating shortcut: {}", shortcut_keys);
+pub fn simulate_shortcut(sequence: Vec<String>, interval_ms: Option<u64>) -> Result<(), String> {
+    println!("Simulating shortcut sequence: {:?}", sequence);
 
     use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 
-    // Create Enigo instance
+    // Create Enigo instance (keeping the initialization as it was)
     let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
 
-    // Keep track of pressed modifiers
-    let mut pressed_modifiers = vec![];
+    let interval = std::time::Duration::from_millis(interval_ms.unwrap_or(100)); // Default interval is 100ms
 
-    // Split the shortcut keys and trim whitespace
-    let keys: Vec<&str> = shortcut_keys.split('+').map(|k| k.trim()).collect();
+    for shortcut_keys in sequence {
+        println!("Simulating shortcut: {}", shortcut_keys);
 
-    // Press down modifier keys first
-    for key in &keys {
-        let result = match *key {
-            "Ctrl" | "Control" => enigo
-                .key(Key::Control, Direction::Press)
-                .map(|_| pressed_modifiers.push(Key::Control)),
-            "Alt" => enigo
-                .key(Key::Alt, Direction::Press)
-                .map(|_| pressed_modifiers.push(Key::Alt)),
-            "Shift" => enigo
-                .key(Key::Shift, Direction::Press)
-                .map(|_| pressed_modifiers.push(Key::Shift)),
-            "Cmd" | "Command" | "Meta" => enigo
-                .key(Key::Meta, Direction::Press)
-                .map(|_| pressed_modifiers.push(Key::Meta)),
-            _ => Ok(()),
-        };
+        // Keep track of pressed modifiers
+        let mut pressed_modifiers = vec![];
 
-        if let Err(e) = result {
-            eprintln!("Error pressing key {}: {}", key, e);
-        }
-    }
+        // Split the shortcut keys and trim whitespace
+        let keys: Vec<&str> = shortcut_keys.split('+').map(|k| k.trim()).collect();
 
-    // Press the main key(s)
-    for key in &keys {
-        if !["Ctrl", "Control", "Alt", "Shift", "Cmd", "Command", "Meta"].contains(&key) {
-            let key_str = key.trim();
-            let result = match key_str {
-                "Enter" => enigo.key(Key::Return, Direction::Click),
-                "Tab" => enigo.key(Key::Tab, Direction::Click),
-                "Backspace" => enigo.key(Key::Backspace, Direction::Click),
-                "Space" => enigo.key(Key::Space, Direction::Click),
-                // Add other special keys as needed
-                _ => {
-                    // Handle character keys
-                    let character = key_str.chars().next().unwrap();
-                    let mut need_shift = false;
-                    let mut char_to_use = character;
-
-                    // Check if character is uppercase or requires Shift
-                    if character.is_uppercase() || is_special_character(character) {
-                        need_shift = true;
-                        char_to_use = character.to_ascii_lowercase();
-                    }
-
-                    // Press Shift if needed and not already pressed
-                    if need_shift && !pressed_modifiers.contains(&Key::Shift) {
-                        enigo
-                            .key(Key::Shift, Direction::Press)
-                            .map(|_| pressed_modifiers.push(Key::Shift))
-                            .map_err(|e| format!("Error pressing Shift key: {}", e))?;
-                    }
-
-                    enigo.key(Key::Unicode(char_to_use), Direction::Click)
-                }
+        // Press down modifier keys first
+        for key in &keys {
+            let result = match *key {
+                "Ctrl" | "Control" => enigo
+                    .key(Key::Control, Direction::Press)
+                    .map(|_| pressed_modifiers.push(Key::Control)),
+                "Alt" => enigo
+                    .key(Key::Alt, Direction::Press)
+                    .map(|_| pressed_modifiers.push(Key::Alt)),
+                "Shift" => enigo
+                    .key(Key::Shift, Direction::Press)
+                    .map(|_| pressed_modifiers.push(Key::Shift)),
+                "Cmd" | "Command" | "Meta" => enigo
+                    .key(Key::Meta, Direction::Press)
+                    .map(|_| pressed_modifiers.push(Key::Meta)),
+                _ => Ok(()),
             };
 
             if let Err(e) = result {
-                eprintln!("Error pressing key {}: {}", key_str, e);
+                eprintln!("Error pressing key {}: {}", key, e);
             }
         }
-    }
 
-    // Release modifier keys in reverse order
-    for key in pressed_modifiers.iter().rev() {
-        if let Err(e) = enigo.key(*key, Direction::Release) {
-            eprintln!("Error releasing key {:?}: {}", key, e);
+        // Press the main key(s)
+        for key in &keys {
+            if !["Ctrl", "Control", "Alt", "Shift", "Cmd", "Command", "Meta"].contains(&key) {
+                let key_str = key.trim();
+                let result = match key_str {
+                    "Enter" => enigo.key(Key::Return, Direction::Click),
+                    "Tab" => enigo.key(Key::Tab, Direction::Click),
+                    "Backspace" => enigo.key(Key::Backspace, Direction::Click),
+                    "Space" => enigo.key(Key::Space, Direction::Click),
+                    // Add other special keys as needed
+                    _ => {
+                        // Handle character keys
+                        let character = key_str.chars().next().unwrap();
+                        let mut need_shift = false;
+                        let mut char_to_use = character;
+
+                        // Check if character is uppercase or requires Shift
+                        if character.is_uppercase() || is_special_character(character) {
+                            need_shift = true;
+                            char_to_use = character.to_ascii_lowercase();
+                        }
+
+                        // Press Shift if needed and not already pressed
+                        if need_shift && !pressed_modifiers.contains(&Key::Shift) {
+                            enigo
+                                .key(Key::Shift, Direction::Press)
+                                .map(|_| pressed_modifiers.push(Key::Shift))
+                                .map_err(|e| format!("Error pressing Shift key: {}", e))?;
+                        }
+
+                        enigo.key(Key::Unicode(char_to_use), Direction::Click)
+                    }
+                };
+
+                if let Err(e) = result {
+                    eprintln!("Error pressing key {}: {}", key_str, e);
+                }
+            }
         }
+
+        // Release modifier keys in reverse order
+        for key in pressed_modifiers.iter().rev() {
+            if let Err(e) = enigo.key(*key, Direction::Release) {
+                eprintln!("Error releasing key {:?}: {}", key, e);
+            }
+        }
+
+        // Wait for the specified interval before the next shortcut
+        std::thread::sleep(interval);
     }
 
     Ok(())

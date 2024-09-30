@@ -1,17 +1,11 @@
-// src/App.tsx
 import { invoke } from "@tauri-apps/api";
 import { useState, useEffect } from "react";
 import { Card } from "./components/ui/card";
-import AddShortcutForm, { displayKey } from "./components/AddShortcutForm";
+import AddShortcutForm, { displayKey, Shortcut } from "./components/AddShortcutForm";
 import { buttonVariants } from "./components/ui/button";
 import clsx from "clsx";
 import ConnectWithQR from "./components/ConnectWithQR";
 import { listen } from "@tauri-apps/api/event";
-
-interface Shortcut {
-  id?: number;
-  keys: string;
-}
 
 interface Device {
   name: string;
@@ -22,25 +16,29 @@ function App() {
   const [shortcuts, setShortcuts] = useState<Shortcut[]>([]);
   const [editingShortcut, setEditingShortcut] = useState<Shortcut | null>(null);
   const [isAddingShortcut, setIsAddingShortcut] = useState(false);
-  const [devices, setDevices] = useState<Device[]>([]);
+  const [connectedDevice, setConnectedDevice] = useState<Device | null>(null);
+  const [isQRDialogOpen, setIsQRDialogOpen] = useState(false);
 
   useEffect(() => {
     fetchShortcuts();
 
-    // Listen for 'shortcuts_updated' events from the Rust backend
     const unlistenShortcuts = listen<Shortcut[]>("shortcuts_updated", (event) => {
       setShortcuts(event.payload);
     });
 
-    // Listen for 'devices_updated' events from the Rust backend
-    const unlistenDevices = listen<Device[]>("devices_updated", (event) => {
-      setDevices(event.payload);
+    const unlistenDevices = listen<Device | null>("devices_updated", (event) => {
+      setConnectedDevice(event.payload);
     });
 
-    // Clean up listeners on unmount
+    const unlistenDeviceConnected = listen<Device>("device_connected", () => {
+      console.log("device_connected");
+      setIsQRDialogOpen(false);
+   });
+console.log('unlistenDevices :>> ', unlistenDevices);
     return () => {
       unlistenShortcuts.then((unlisten) => unlisten());
       unlistenDevices.then((unlisten) => unlisten());
+      unlistenDeviceConnected.then((unlisten) => unlisten());
     };
   }, []);
 
@@ -53,11 +51,20 @@ function App() {
     }
   };
 
+  const sequencesAreEqual = (seq1: string[], seq2: string[]): boolean => {
+    if (seq1.length !== seq2.length) return false;
+    for (let i = 0; i < seq1.length; i++) {
+      if (seq1[i] !== seq2[i]) return false;
+    }
+    return true;
+  };
+
   const addOrUpdateShortcut = async (shortcut: Shortcut) => {
     try {
       const duplicate = shortcuts.some(
         (existing) =>
-          existing.keys === shortcut.keys && existing.id !== shortcut.id
+          sequencesAreEqual(existing.sequence, shortcut.sequence) &&
+          existing.id !== shortcut.id
       );
       if (!duplicate) {
         if (shortcut.id) {
@@ -89,7 +96,7 @@ function App() {
     <div className="p-4">
       <h1 className="text-2xl flex justify-between items-center font-bold mb-4 gap-2">
         <div className="flex items-center gap-2">
-          <svg
+        <svg
             width="23"
             height="25"
             viewBox="0 0 23 25"
@@ -114,24 +121,17 @@ function App() {
             />
           </svg>
         </div>
-        <ConnectWithQR />
+        {connectedDevice ? (
+          <div className="flex items-center gap-2">
+            <span>{connectedDevice.name} Connected</span>
+          </div>
+        ) : (
+          <ConnectWithQR  isOpen={isQRDialogOpen}
+          onOpenChange={setIsQRDialogOpen}/>
+        )}
       </h1>
 
-      <div className="mb-4">
-        <h2 className="text-lg font-semibold">Connected Devices</h2>
-        {devices.length === 0 ? (
-          <p className="text-gray-500">No devices connected</p>
-        ) : (
-          <ul>
-            {devices.map((device) => (
-              <li key={device.name}>{device.name}</li>
-            ))}
-          </ul>
-        )}
-      </div>
-
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-        {/* Add Shortcut Button */}
         <AddShortcutForm
           onSave={addOrUpdateShortcut}
           onClose={() => {
@@ -142,7 +142,7 @@ function App() {
           isOpen={isAddingShortcut}
           openForm={() => setIsAddingShortcut(true)}
         />
-        {shortcuts.map((shortcut) => (
+        {shortcuts?.map((shortcut) => (
           <Card
             key={shortcut.id}
             className={clsx(
@@ -152,12 +152,13 @@ function App() {
             onClick={() => setEditingShortcut(shortcut)}
           >
             <div className="flex flex-col items-center justify-center h-full">
-              <p className="text-sm text-gray-500">{displayKey(shortcut.keys)}</p>
+                {shortcut.name || shortcut?.sequence?.map((keyCombo, index) => (
+                  <div key={index}>{displayKey(keyCombo)}</div>
+                ))}
             </div>
           </Card>
         ))}
 
-        {/* Edit Shortcut Dialog */}
         {editingShortcut && (
           <AddShortcutForm
             onSave={addOrUpdateShortcut}
