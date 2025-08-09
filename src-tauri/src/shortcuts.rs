@@ -4,9 +4,8 @@ use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, GlobalShortcutManager, Manager, State};
 use tokio::sync::broadcast::Sender;
-
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Shortcut {
     pub id: u64,
@@ -106,25 +105,52 @@ pub fn update_shortcut(
     store: State<Arc<ShortcutStore>>,
     app_handle: AppHandle,
 ) -> Result<(), String> {
+    println!("Received shortcut to update: {:?}", shortcut);
+
     {
-        let mut shortcuts = store.shortcuts.lock().map_err(|e| e.to_string())?;
+        let mut shortcuts = store.shortcuts.lock().map_err(|e| {
+            let error = format!("Failed to acquire lock on shortcuts: {}", e);
+            println!("{}", error);
+            error
+        })?;
+
+        println!("Current shortcuts: {:?}", *shortcuts);
+
         if let Some(existing) = shortcuts.iter_mut().find(|s| s.id == shortcut.id) {
+            println!(
+                "Found matching shortcut with id {}: {:?}",
+                shortcut.id, existing
+            );
+
             existing.sequence = shortcut.sequence.clone();
+            existing.name = shortcut.name.clone();
+
+            println!("Updated shortcut: {:?}", existing);
         } else {
-            return Err("Shortcut not found".into());
+            let error = format!("Shortcut with id {} not found", shortcut.id);
+            println!("{}", error);
+            return Err(error.into());
         }
     }
 
+    println!("Saving updated shortcuts to store...");
     store.save();
+    println!("Shortcuts saved successfully.");
 
     // Broadcast the updated shortcuts list
+    println!("Broadcasting shortcuts to frontend...");
     store.broadcast_shortcuts();
 
     // Emit an event to notify frontend about the update
+    println!("Emitting 'shortcuts_updated' event...");
     app_handle
         .emit_all("shortcuts_updated", store.get_shortcuts())
         .map_err(|e| e.to_string())?;
 
+    println!("Registering global shortcuts...");
+    register_global_shortcuts(app_handle.clone(), Arc::clone(&store));
+
+    println!("Shortcut update completed successfully.");
     Ok(())
 }
 
@@ -166,6 +192,7 @@ pub fn add_shortcut(
     app_handle
         .emit_all("shortcuts_updated", store.get_shortcuts())
         .map_err(|e| e.to_string())?;
+    register_global_shortcuts(app_handle.clone(), Arc::clone(&store));
 
     Ok(())
 }
@@ -206,6 +233,7 @@ pub fn delete_shortcut(
     app_handle
         .emit_all("shortcuts_updated", store.get_shortcuts())
         .map_err(|e| e.to_string())?;
+    register_global_shortcuts(app_handle.clone(), Arc::clone(&store));
 
     Ok(())
 }
@@ -221,7 +249,7 @@ pub fn delete_shortcut(
 /// * `Result<(), String>` - Ok if successful, Err with an error message otherwise.
 #[tauri::command]
 pub fn simulate_shortcut(sequence: Vec<String>, interval_ms: Option<u64>) -> Result<(), String> {
-    println!("Simulating shortcut sequence: {:?}", sequence);
+    // println!("Simulating shortcut sequence: {:?}", sequence);
 
     use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 
@@ -322,5 +350,107 @@ fn is_special_character(c: char) -> bool {
         '!' | '@' | '#' | '$' | '%' | '^' | '&' | '*' | '(' | ')' | '_' | '+' | '{' | '}' | '|'
         | ':' | '"' | '<' | '>' | '?' => true,
         _ => false,
+    }
+}
+
+#[tauri::command]
+pub fn simulate_shortcut_by_id(
+    id: u64,
+    store: State<Arc<ShortcutStore>>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    let shortcuts = store.get_shortcuts();
+    if let Some(shortcut) = shortcuts.iter().find(|s| s.id == id) {
+        simulate_sequence(shortcut.sequence.clone());
+        Ok(())
+    } else {
+        Err(format!("Shortcut with ID {} not found.", id))
+    }
+}
+
+fn simulate_sequence(sequence: Vec<String>) {
+    // Use a separate thread to avoid blocking
+    std::thread::spawn(move || {
+        for item in sequence {
+            if is_text_string(&item) {
+                println!("text is string: {}", &item);
+                // Treat as text to type out
+                if let Err(e) = simulate_text_typing(&item) {
+                    eprintln!("Error typing text '{}': {}", item, e);
+                }
+            } else {
+                println!("text is key sequence {}", &item);
+                // Treat as key sequence
+                if let Err(e) = simulate_shortcut(vec![item], None) {
+                    eprintln!("Error simulating shortcut: {}", e);
+                }
+            }
+        }
+    });
+}
+
+fn is_text_string(input: &str) -> bool {
+    // If the string does not contain any modifier keys or '+', treat it as text
+    !input.contains('+')
+        && !input.to_lowercase().contains("ctrl")
+        && !input.to_lowercase().contains("control")
+        && !input.to_lowercase().contains("shift")
+        && !input.to_lowercase().contains("alt")
+        && !input.to_lowercase().contains("cmd")
+        && !input.to_lowercase().contains("command")
+        && !input.to_lowercase().contains("meta")
+}
+
+fn simulate_text_typing(text: &str) -> Result<(), String> {
+    use enigo::{Enigo, Keyboard, Settings};
+
+    // Create Enigo instance (keeping the initialization as it was)
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
+
+    // Type each character in the text
+    for c in text.chars() {
+        enigo
+            .text(&c.to_string())
+            .map_err(|e| format!("Error typing character '{}': {}", c, e))?;
+    }
+
+    Ok(())
+}
+
+pub fn register_global_shortcuts(app_handle: AppHandle, store: Arc<ShortcutStore>) {
+    let shortcuts = store.get_shortcuts();
+    let mut shortcut_manager = app_handle.global_shortcut_manager();
+
+    // First, unregister all existing global shortcuts
+    shortcut_manager.unregister_all().unwrap();
+
+    // Register Ctrl+1 to Ctrl+0 (0 represents 10)
+    for i in 0..10 {
+        let hotkey = format!("Ctrl+{}", (i + 1) % 10);
+        if let Some(shortcut) = shortcuts.get(i) {
+            let sequence = shortcut.sequence.clone();
+            shortcut_manager
+                .register(&hotkey, move || {
+                    simulate_sequence(sequence.clone());
+                })
+                .unwrap_or_else(|e| {
+                    eprintln!("Failed to register global shortcut {}: {}", hotkey, e);
+                });
+        }
+    }
+
+    // Register Ctrl+Shift+1 to Ctrl+Shift+0 (for shortcuts 11-20)
+    for i in 10..20 {
+        let hotkey = format!("Ctrl+Shift+{}", (i - 9) % 10);
+        if let Some(shortcut) = shortcuts.get(i) {
+            let sequence = shortcut.sequence.clone();
+            shortcut_manager
+                .register(&hotkey, move || {
+                    simulate_sequence(sequence.clone());
+                })
+                .unwrap_or_else(|e| {
+                    eprintln!("Failed to register global shortcut {}: {}", hotkey, e);
+                });
+        }
     }
 }

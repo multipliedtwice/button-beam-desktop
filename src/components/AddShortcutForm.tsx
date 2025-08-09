@@ -1,7 +1,21 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  MouseEvent,
+} from "react";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
-import { TrashIcon, PlusIcon, Circle, Square } from "lucide-react";
+import {
+  TrashIcon,
+  PlusIcon,
+  Circle,
+  Square,
+  Edit,
+  Check,
+  X,
+} from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -51,10 +65,10 @@ const AddShortcutForm: React.FC<AddShortcutFormProps> = ({
   openForm,
 }) => {
   const [name, setName] = useState(
-    existingShortcut ? existingShortcut.name : ""
+    existingShortcut ? existingShortcut.name || "" : ""
   );
   const [sequence, setSequence] = useState<string[]>(
-    existingShortcut ? existingShortcut.sequence : []
+    existingShortcut ? existingShortcut.sequence || [] : []
   );
   const [isCapturing, setIsCapturing] = useState(false);
   const [activeTab, setActiveTab] = useState("shortcut");
@@ -71,22 +85,51 @@ const AddShortcutForm: React.FC<AddShortcutFormProps> = ({
   // Ref for debounce timeout
   const debounceTimeout = useRef<number | null>(null);
 
+  // State to track which strokes are being edited
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editedStroke, setEditedStroke] = useState<string>("");
+
+  // Use useRef to persist the sets across re-renders without causing re-renders
+  const modifierKeys = useRef<Set<string>>(new Set());
+  const regularKeys = useRef<Set<string>>(new Set());
+
+  // Refs for state variables used in event handlers
+  const activeTabRef = useRef(activeTab);
+  const isRecordingRef = useRef(isRecording);
+
+  // Update refs when state changes
   useEffect(() => {
-    if (isOpen && activeTab === "shortcut") setIsCapturing(true);
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
 
-    const modifierKeys = new Set<string>(); // Track pressed modifier keys
-    const regularKeys = new Set<string>(); // Track pressed regular keys
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+  }, [isRecording]);
 
-    // Define which keys are considered modifiers
-    const isModifierKey = (key: string) => {
-      return (
-        key === "Control" || key === "Shift" || key === "Alt" || key === "Meta"
-      );
-    };
+  useEffect(() => {
+    console.log('existingShortcut :>> ', existingShortcut);
+    if (existingShortcut) {
+      setName(existingShortcut.name || "");
+      setSequence(existingShortcut.sequence || []);
+    }
+  }, [existingShortcut]);
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-      // Prevent default behavior to avoid unintended actions
-      event.preventDefault();
+  // Define which keys are considered modifiers
+  const isModifierKey = (key: string) => {
+    return (
+      key === "Control" || key === "Shift" || key === "Alt" || key === "Meta"
+    );
+  };
+
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent): void => {
+      // Only prevent default if we're capturing keys
+      if (
+        (activeTabRef.current === "shortcut" && isCapturing) ||
+        (activeTabRef.current === "record" && isRecordingRef.current)
+      ) {
+        event.preventDefault();
+      }
 
       const key = event.key;
 
@@ -95,14 +138,18 @@ const AddShortcutForm: React.FC<AddShortcutFormProps> = ({
 
       // Determine if the key is a modifier
       if (isModifierKey(key)) {
-        modifierKeys.add(key);
+        modifierKeys.current.add(key);
       } else {
-        regularKeys.add(key);
+        regularKeys.current.add(key);
       }
 
       // Form the key combination
-      const modifiers = Array.from(modifierKeys).map((mod) => displayKey(mod));
-      const regulars = Array.from(regularKeys).map((reg) => displayKey(reg));
+      const modifiers = Array.from(modifierKeys.current).map((mod) =>
+        displayKey(mod)
+      );
+      const regulars = Array.from(regularKeys.current).map((reg) =>
+        displayKey(reg)
+      );
 
       let keyCombination = "";
       if (modifiers.length > 0 && regulars.length > 0) {
@@ -121,53 +168,108 @@ const AddShortcutForm: React.FC<AddShortcutFormProps> = ({
 
       // Set a new timeout to record the key combination after 200ms
       debounceTimeout.current = window.setTimeout(() => {
-        if (activeTab === "shortcut") {
+        if (activeTabRef.current === "shortcut") {
           setSequence([keyCombination]);
           setName(keyCombination); // For Shortcut tab, name is same as keys
           // Stop capturing after the first shortcut
           setIsCapturing(false);
-        } else if (activeTab === "record" && isRecording) {
+        } else if (
+          activeTabRef.current === "record" &&
+          isRecordingRef.current
+        ) {
           // For Record tab, add to sequence
           setSequence((prevSequence) => [...prevSequence, keyCombination]);
         }
       }, 200); // 200ms debounce delay
-    };
+    },
+    [isCapturing] // Added isCapturing to dependencies
+  );
 
-    const handleKeyUp = (event: KeyboardEvent) => {
-      const key = event.key;
+  const handleKeyUp = useCallback((event: KeyboardEvent): void => {
+    const key = event.key;
 
-      // Remove key from respective sets
-      if (isModifierKey(key)) {
-        modifierKeys.delete(key);
-      } else {
-        regularKeys.delete(key);
-      }
-    };
+    // Remove key from respective sets
+    if (isModifierKey(key)) {
+      modifierKeys.current.delete(key);
+    } else {
+      regularKeys.current.delete(key);
+    }
+  }, []);
 
-    const handleClickOutside = () => setIsCapturing(false);
+  // Manage event listeners with useEffect
+  useEffect(() => {
+    const keyDownHandler = (event: KeyboardEvent) => handleKeyDown(event);
+    const keyUpHandler = (event: KeyboardEvent) => handleKeyUp(event);
 
     if (
-      (isCapturing && activeTab === "shortcut") ||
-      (isRecording && activeTab === "record")
+      ((isCapturing && activeTab === "shortcut") ||
+        (isRecording && activeTab === "record")) &&
+      editingIndex === null
     ) {
-      window.addEventListener("keydown", handleKeyDown);
-      window.addEventListener("keyup", handleKeyUp);
-      document.addEventListener("click", handleClickOutside);
+      window.addEventListener("keydown", keyDownHandler);
+      window.addEventListener("keyup", keyUpHandler);
     } else {
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
-      document.removeEventListener("click", handleClickOutside);
+      window.removeEventListener("keydown", keyDownHandler);
+      window.removeEventListener("keyup", keyUpHandler);
     }
 
     return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
-      document.removeEventListener("click", handleClickOutside);
+      window.removeEventListener("keydown", keyDownHandler);
+      window.removeEventListener("keyup", keyUpHandler);
       if (debounceTimeout.current) {
         clearTimeout(debounceTimeout.current);
       }
+      modifierKeys.current.clear();
+      regularKeys.current.clear();
     };
-  }, [isCapturing, isRecording, isOpen, activeTab]);
+  }, [
+    isCapturing,
+    isRecording,
+    activeTab,
+    editingIndex,
+    handleKeyDown,
+    handleKeyUp,
+  ]);
+
+  const handleConfirmEdit = () => {
+    if (editingIndex !== null) {
+      setSequence((prevSequence) =>
+        prevSequence.map((item, idx) =>
+          idx === editingIndex ? editedStroke : item
+        )
+      );
+      setEditingIndex(null);
+      setEditedStroke("");
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingIndex(null);
+    setEditedStroke("");
+  };
+
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const handleEditStroke = (e: MouseEvent, index: number) => {
+    e.stopPropagation();
+    setEditingIndex(index);
+    setEditedStroke(sequence[index]);
+    // Focus the input field
+    setTimeout(() => {
+      inputRef.current?.focus();
+    }, 0);
+  };
+
+  const handleStartRecording = () => {
+    setIsRecording(true);
+    setSequence([]); // Reset sequence
+    setEditingIndex(null); // Reset editing index
+  };
+
+  const handleStopRecording = () => {
+    setIsRecording(false);
+    setEditingIndex(null); // Reset editing index
+  };
 
   useEffect(() => {
     if (activeTab === "json") {
@@ -178,8 +280,9 @@ const AddShortcutForm: React.FC<AddShortcutFormProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-
+    e.stopPropagation();
     let shortcut: Shortcut | null = null;
+    console.log(1111, sequence);
 
     if (activeTab === "shortcut") {
       if (sequence.length > 0) {
@@ -188,7 +291,7 @@ const AddShortcutForm: React.FC<AddShortcutFormProps> = ({
           : { sequence, name: name || sequence[0] };
       }
     } else if (activeTab === "record") {
-      if (sequence.length > 0 && name) {
+      if (sequence.length > 0) {
         shortcut = existingShortcut
           ? { ...existingShortcut, sequence, name }
           : { sequence, name };
@@ -209,10 +312,9 @@ const AddShortcutForm: React.FC<AddShortcutFormProps> = ({
         return;
       }
     }
-
+    console.log("shortcut :>> ", shortcut);
     if (shortcut) {
       onSave(shortcut);
-      onClose(); // Close form
     }
   };
 
@@ -221,17 +323,9 @@ const AddShortcutForm: React.FC<AddShortcutFormProps> = ({
     setJsonError(""); // Reset error on change
   };
 
-  const handleStartRecording = () => {
-    setIsRecording(true);
-    setSequence([]); // Reset sequence
-  };
-
-  const handleStopRecording = () => {
-    setIsRecording(false);
-  };
-
   // Function to delete a specific key combination from the sequence
-  const handleDeleteCombination = (index: number) => {
+  const handleDeleteCombination = (e: MouseEvent, index: number) => {
+    e.stopPropagation();
     setSequence((prevSequence) => prevSequence.filter((_, i) => i !== index));
   };
 
@@ -259,6 +353,8 @@ const AddShortcutForm: React.FC<AddShortcutFormProps> = ({
                 setActiveTab(value);
                 setIsCapturing(value === "shortcut");
                 setIsRecording(false); // Stop recording when changing tabs
+                setEditingIndex(null); // Reset editing index
+                setSequence([]); // Clear sequence when switching tabs
               }}
             >
               <TabsList className="grid w-full grid-cols-3">
@@ -270,11 +366,9 @@ const AddShortcutForm: React.FC<AddShortcutFormProps> = ({
                 <div className="space-y-4">
                   <div className="p-4 bg-muted rounded h-[68px] flex items-center justify-center">
                     {sequence.length > 0 ? (
-                      sequence.map((combo, idx) => (
-                        <div className="block capitalize truncate max-w-[calc(100vw-100px)] space-x-2 text-3xl text-center text-gray-400">
-                          {combo}
-                        </div>
-                      ))
+                      <div className="block capitalize truncate max-w-[calc(100vw-100px)] space-x-2 text-3xl text-center text-gray-400">
+                        {sequence.join(", ")}
+                      </div>
                     ) : (
                       <div className="text-gray-400">
                         Press a key combination
@@ -285,7 +379,7 @@ const AddShortcutForm: React.FC<AddShortcutFormProps> = ({
               </TabsContent>
               <TabsContent value="record">
                 <div className="space-y-4">
-                  <div className="flex gap-4">
+                  <div className="flex gap-4 ">
                     <div className="w-full">
                       <Label htmlFor="name">Name</Label>
                       <Input
@@ -296,44 +390,109 @@ const AddShortcutForm: React.FC<AddShortcutFormProps> = ({
                       />
                     </div>
                     <div className="flex items-end gap-2">
-                        <Button
-                          variant={isRecording ? "destructive" : "outline"}
-                          onClick={
-                            isRecording
-                              ? handleStopRecording
-                              : handleStartRecording
-                          }
-                        >
-                          <span className="mr-2">
-                            {isRecording ? (
-                              <Square size={14} />
-                            ) : (
-                              <Circle size={14} />
-                            )}
-                          </span>
-                          {isRecording ? "Stop Recording" : "Start Recording"}
-                        </Button>
+                      <Button
+                        variant={isRecording ? "destructive" : "outline"}
+                        onClick={
+                          isRecording
+                            ? handleStopRecording
+                            : handleStartRecording
+                        }
+                      >
+                        <span className="mr-2">
+                          {isRecording ? (
+                            <Square size={14} />
+                          ) : (
+                            <Circle size={14} />
+                          )}
+                        </span>
+                        {isRecording ? "Stop Recording" : "Start Recording"}
+                      </Button>
                     </div>
                   </div>
 
                   <div className="p-4 bg-muted rounded">
-                    
                     <div className="flex flex-col space-y-2 text-center text-gray-700">
                       {sequence.length > 0 ? (
                         sequence.map((keyCombo, index) => (
                           <div
                             key={index}
-                            className="flex items-center justify-between space-x-2"
+                            className="flex items-center justify-between gap-1 group"
                           >
-                            <span className="capitalize">{keyCombo}</span>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleDeleteCombination(index)}
-                              aria-label={`Delete ${keyCombo}`}
-                            >
-                              <TrashIcon className="h-4 w-4 text-red-500" />
-                            </Button>
+                            {editingIndex === index ? (
+                              <>
+                                {/* Editable input field */}
+                                <Input
+                                  ref={inputRef}
+                                  value={editedStroke}
+                                  onChange={(e) => {
+                                    setEditedStroke(e.target.value);
+                                  }}
+                                  className="bg-white"
+                                  onClick={(e) => e.stopPropagation()}
+                                  onKeyDown={(e) => e.stopPropagation()}
+                                  onKeyUp={(e) => e.stopPropagation()}
+                                />
+                                <div className="flex gap-1">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    type="button"
+                                    onClick={handleConfirmEdit}
+                                    aria-label="Confirm Edit"
+                                  >
+                                    <Check className="h-4 w-4" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    type="button"
+                                    onClick={handleCancelEdit}
+                                    aria-label="Cancel Edit"
+                                  >
+                                    <X className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <span className="flex items-center capitalize h-[36px]">
+                                  {keyCombo}
+                                </span>
+                                {!isRecording && (
+                                  <div
+                                    className={clsx(
+                                      editingIndex === index
+                                        ? "opacity-100"
+                                        : "opacity-0 group-hover:opacity-100",
+                                      "flex gap-1"
+                                    )}
+                                  >
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      type="button"
+                                      onClick={(e) =>
+                                        handleEditStroke(e, index)
+                                      }
+                                      aria-label={`Edit ${keyCombo}`}
+                                    >
+                                      <Edit className="h-4 w-4" />
+                                    </Button>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      type="button"
+                                      onClick={(e) =>
+                                        handleDeleteCombination(e, index)
+                                      }
+                                      aria-label={`Delete ${keyCombo}`}
+                                    >
+                                      <TrashIcon className="h-4 w-4" />
+                                    </Button>
+                                  </div>
+                                )}
+                              </>
+                            )}
                           </div>
                         ))
                       ) : (
@@ -370,6 +529,7 @@ const AddShortcutForm: React.FC<AddShortcutFormProps> = ({
 
             <div className="flex flex-col md:flex-row justify-end gap-4">
               <Button
+                type="button"
                 className="w-full order-2 md:order-1"
                 variant="secondary"
                 onClick={onClose}
@@ -380,6 +540,7 @@ const AddShortcutForm: React.FC<AddShortcutFormProps> = ({
                 className="w-full order-1 md:order-2"
                 variant="default"
                 type="submit"
+                onClick={(e) => e.stopPropagation()}
               >
                 {existingShortcut ? "Update" : "Add"}
               </Button>
@@ -388,6 +549,7 @@ const AddShortcutForm: React.FC<AddShortcutFormProps> = ({
             {existingShortcut && onDelete && (
               <div className="flex justify-end">
                 <Button
+                  type="button"
                   variant="ghost"
                   onClick={onDelete}
                   className="flex items-center gap-2 w-full"

@@ -1,12 +1,13 @@
+/// ./src-tauri/src/main.rs
 mod shortcuts;
 mod sockets;
 
 use crate::shortcuts::{
-    add_shortcut, delete_shortcut, get_shortcuts_command, simulate_shortcut, update_shortcut,
-    ShortcutStore,
+    add_shortcut, delete_shortcut, get_shortcuts_command, register_global_shortcuts,
+    simulate_shortcut, simulate_shortcut_by_id, update_shortcut, Shortcut, ShortcutStore,
 };
+
 use crate::sockets::{start_websocket_server, AppState};
-use shortcuts::Shortcut;
 use std::net::{Ipv4Addr, TcpListener};
 use std::sync::Arc;
 use tauri::{Manager, State};
@@ -79,11 +80,29 @@ fn main() {
             let app_handle = app.handle();
             let ip_clone = ip.clone();
 
+            // Clone variables before moving into the closure
+            let store_clone_for_ws = Arc::clone(&store_clone);
+            let app_handle_for_ws = app_handle.clone();
+            let app_state_clone_for_ws = Arc::clone(&app_state_clone);
+
             tauri::async_runtime::spawn(async move {
-                start_websocket_server(&ip, port, store_clone, app_state_clone, app_handle).await;
+                start_websocket_server(
+                    &ip,
+                    port,
+                    store_clone_for_ws,
+                    app_state_clone_for_ws,
+                    app_handle_for_ws,
+                )
+                .await;
             });
 
             println!("WebSocket server started at ws://{}:{}", ip_clone, port);
+
+            // Register global shortcuts
+            let store_clone_for_shortcuts = Arc::clone(&store_clone);
+            let app_handle_for_shortcuts = app_handle.clone();
+            register_global_shortcuts(app_handle_for_shortcuts, store_clone_for_shortcuts);
+
             Ok(())
         })
         .manage(Arc::clone(&store)) // Use cloned `store` here
@@ -94,6 +113,7 @@ fn main() {
             update_shortcut,
             delete_shortcut,
             simulate_shortcut,
+            simulate_shortcut_by_id,
             get_local_ip,
             get_server_config,
         ])

@@ -41,7 +41,10 @@ const ConnectWithQR: React.FC<ConnectWithQRProps> = ({ isOpen, onOpenChange }) =
       </Button>
 
       {/* QR Code Dialog */}
-      <Dialog open={isQrOpen} onOpenChange={onOpenChange}>
+      <Dialog open={isQrOpen} onOpenChange={() => {
+        setIsQrOpen(false)
+        onOpenChange(isOpen)
+      }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Connect with QR</DialogTitle>

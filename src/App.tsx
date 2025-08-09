@@ -1,15 +1,26 @@
 import { invoke } from "@tauri-apps/api";
 import { useState, useEffect } from "react";
 import { Card } from "./components/ui/card";
-import AddShortcutForm, { displayKey, Shortcut } from "./components/AddShortcutForm";
+import AddShortcutForm, { Shortcut } from "./components/AddShortcutForm";
 import { buttonVariants } from "./components/ui/button";
 import clsx from "clsx";
 import ConnectWithQR from "./components/ConnectWithQR";
 import { listen } from "@tauri-apps/api/event";
+import { LucideSettings, Plus } from "lucide-react";
 
 interface Device {
   name: string;
   connected: boolean;
+}
+
+function getHotkeyLabel(index: number): string {
+  if (index < 10) {
+    return `Ctrl+${(index + 1) % 10 || 10}`;
+  } else if (index < 20) {
+    return `Ctrl+Shift+${(index - 9) % 10 || 10}`;
+  } else {
+    return "";
+  }
 }
 
 function App() {
@@ -22,19 +33,25 @@ function App() {
   useEffect(() => {
     fetchShortcuts();
 
-    const unlistenShortcuts = listen<Shortcut[]>("shortcuts_updated", (event) => {
-      setShortcuts(event.payload);
-    });
+    const unlistenShortcuts = listen<Shortcut[]>(
+      "shortcuts_updated",
+      (event) => {
+        console.log('event :>> ', event);
+        setShortcuts(event.payload);
+      }
+    );
 
-    const unlistenDevices = listen<Device | null>("devices_updated", (event) => {
-      setConnectedDevice(event.payload);
-    });
+    const unlistenDevices = listen<Device | null>(
+      "devices_updated",
+      (event) => {
+        setConnectedDevice(event.payload);
+      }
+    );
 
     const unlistenDeviceConnected = listen<Device>("device_connected", () => {
-      console.log("device_connected");
       setIsQRDialogOpen(false);
-   });
-console.log('unlistenDevices :>> ', unlistenDevices);
+    });
+
     return () => {
       unlistenShortcuts.then((unlisten) => unlisten());
       unlistenDevices.then((unlisten) => unlisten());
@@ -61,19 +78,25 @@ console.log('unlistenDevices :>> ', unlistenDevices);
 
   const addOrUpdateShortcut = async (shortcut: Shortcut) => {
     try {
+      // Modify duplicate check to exclude the current shortcut's ID
       const duplicate = shortcuts.some(
         (existing) =>
           sequencesAreEqual(existing.sequence, shortcut.sequence) &&
           existing.id !== shortcut.id
       );
-      if (!duplicate) {
-        if (shortcut.id) {
-          await invoke("update_shortcut", { shortcut });
-        } else {
-          await invoke("add_shortcut", {
-            shortcut: { ...shortcut, id: Date.now() },
-          });
-        }
+
+      if (duplicate) {
+        // Optionally, you can show a warning or error message to the user
+        alert("A shortcut with the same sequence already exists.");
+        return;
+      } 
+
+      if (shortcut.id) {
+        await invoke("update_shortcut", { shortcut });
+      } else {
+        await invoke("add_shortcut", {
+          shortcut: { ...shortcut, id: Date.now() },
+        });
       }
 
       setEditingShortcut(null);
@@ -96,7 +119,7 @@ console.log('unlistenDevices :>> ', unlistenDevices);
     <div className="p-4">
       <h1 className="text-2xl flex justify-between items-center font-bold mb-4 gap-2">
         <div className="flex items-center gap-2">
-        <svg
+          <svg
             width="23"
             height="25"
             viewBox="0 0 23 25"
@@ -126,8 +149,10 @@ console.log('unlistenDevices :>> ', unlistenDevices);
             <span>{connectedDevice.name} Connected</span>
           </div>
         ) : (
-          <ConnectWithQR  isOpen={isQRDialogOpen}
-          onOpenChange={setIsQRDialogOpen}/>
+          <ConnectWithQR
+            isOpen={isQRDialogOpen}
+            onOpenChange={setIsQRDialogOpen}
+          />
         )}
       </h1>
 
@@ -142,23 +167,50 @@ console.log('unlistenDevices :>> ', unlistenDevices);
           isOpen={isAddingShortcut}
           openForm={() => setIsAddingShortcut(true)}
         />
-        {shortcuts?.map((shortcut) => (
-          <Card
-            key={shortcut.id}
-            className={clsx(
-              buttonVariants({ variant: "outline" }),
-              "relative h-32 p-4 cursor-pointer"
-            )}
-            onClick={() => setEditingShortcut(shortcut)}
-          >
-            <div className="flex flex-col items-center justify-center h-full">
-                {shortcut.name || shortcut?.sequence?.map((keyCombo, index) => (
-                  <div key={index}>{displayKey(keyCombo)}</div>
-                ))}
-            </div>
-          </Card>
-        ))}
+        {shortcuts?.map((shortcut, index) => (
+          <>
+            <Card
+              key={shortcut.id}
+              className={clsx(
+                buttonVariants({ variant: "outline" }),
+                "relative h-32 p-4"
+              )}
+            >
+              {/* Settings icon at the top right */}
+              <div
+                className="absolute top-2 right-2"
+                onClick={(e) => {
+                  e.stopPropagation(); // Prevent click propagation to card
+                  setEditingShortcut(shortcut); // Open settings for editing
+                }}
+              >
+                <LucideSettings className="w-5 h-5 cursor-pointer" />
+              </div>
+              {/* Shortcut name in the center */}
+              <div className="flex flex-col items-center justify-center h-full">
+                <div className="text-xl font-semibold">
+                  {shortcut.name || `Shortcut ${index + 1}`}
+                </div>
+              </div>
+              {/* Hotkey at the bottom left */}
+              <div className="absolute bottom-2 left-2 text-sm text-gray-600">
+                {getHotkeyLabel(index)}
+              </div>
+            </Card>
 
+            {isAddingShortcut && (
+              <AddShortcutForm
+                onSave={addOrUpdateShortcut}
+                onClose={() => {
+                  setIsAddingShortcut(false);
+                  setEditingShortcut(null);
+                }}
+                existingShortcut={null}
+                isOpen={isAddingShortcut}
+              />
+            )}
+          </>
+        ))}
         {editingShortcut && (
           <AddShortcutForm
             onSave={addOrUpdateShortcut}
