@@ -4,7 +4,7 @@ Desktop companion for [Button Beam Mobile](https://github.com/multipliedtwice/bu
 
 Built with Tauri, React, and Rust.
 
-![Button Beam Desktop](bb-1024.png)
+<img src="bb-1024.png" alt="Button Beam logo" width="160" />
 
 ## Run locally
 
